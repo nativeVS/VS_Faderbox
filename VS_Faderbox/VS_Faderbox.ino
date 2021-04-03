@@ -14,15 +14,21 @@
 //
 // Channel and Fader Reassignment SysEx Format:
 // F0 [id] [id] [id] [dI] [s1] [s2] [cc] [f0] [f1] [f2] [f3] xx F7
-// with manufacturer ID (00 21 57), device id (01) and sub ids #1 & #2 (model number [02], version number [04] respectively);
+// with manufacturer ID (00 21 57), device id (01) and sub ids #1 & #2 (model number [02], version number [05] respectively);
 // checksum includes manufacturer id
+// in true unidirectional SysEx fashion, there is no aknowledgement of succesful receipt beyond a quick flash of the Teensy LED.
+//
+// Channel and Fader Reassignment SysEx Request:
+// F0 [id] [id] [id] [dI] [s1] [s2] 0x11 xx F7
+// Responds with following string:
+// F0 [id] [id] [id] [dI] 0x00 [s2] [cc] [f0] [f1] [f2] [f3] xx F7
 //
 // Responds to SysEx ID Requests:
 // F0 7E 01 06 01 F7 (device id 01) or
 // F0 7E 7F 06 01 F7 (ignore device id 7F)
 // SysEx Reply:
-// F0 7E 01 06 02 [id] [id] [id] 01 01 00 02 00 00 00 04 F7
-//                               |   | |   | |---------- Software Version No: v4
+// F0 7E 01 06 02 [id] [id] [id] 01 01 00 02 00 00 00 05 F7
+//                               |   | |   | |---------- Software Version No: v5
 //                               |   | |---- Model Number: 00 02 (Teensy version)
 //                               |---- Family Code: 01 01 (USB MIDI Controller)
 //
@@ -37,8 +43,10 @@ USBMIDI_Interface midi;
 
 constexpr byte deviceID{ 0x01 };
 constexpr byte modelNumber[2]{ 0x00, 0x02 };
-constexpr byte softwareVersion[4]{ 0x00, 0x00, 0x00, 0x04 };
+constexpr byte softwareVersion[4]{ 0x00, 0x00, 0x00, 0x05 };
 constexpr byte manufacturerID[3]{ 0x00, 0x21, 0x57 };
+constexpr byte requestCode{ 0x11 };
+constexpr byte transmitCode{ 0x00 };
 
 constexpr int sysExLength{ 14 };
 constexpr int dataStart{ 7 };
@@ -124,11 +132,37 @@ struct incomingSysEx : MIDI_Callbacks {
           digitalWrite(13, LOW);
         }
       }
-      else if (sysex.data[0] == 0xf0 // ID Request
-      && sysex.data[1] == 0x7e && sysex.data[2] == (0x7f || deviceID)
+      if (sysex.data[0] == 0xf0 // ID Request
+      && sysex.data[1] == 0x7e && (sysex.data[2] == 0x7f || sysex.data[2] == deviceID)
       && sysex.data[3] == 0x06 && sysex.data[4] == 0x01
       && sysex.data[5] == 0xf7){
+        delay(50);
         midi.send(sysexIDreply);
+      }
+      if (sysex.data[0] == 0xf0 // request current channel and fader assignment
+      && sysex.data[1] == defaultSysEx[1] && sysex.data[2] == defaultSysEx[2] && sysex.data[3] == defaultSysEx[3] // Manufacturer ID
+      && sysex.data[5] == defaultSysEx[5] && sysex.data[6] == defaultSysEx[6] // sub IDs
+      && sysex.data[7] == requestCode
+      && sysex.data[9] == 0xf7){
+        byte checksm = sysex.data[8];
+        for (int i=1; i<8; i++){
+          checksm += sysex.data[i];
+        }
+        if (checksm == 0xff){
+          byte sysExReply[sysExLength]{};
+          std::copy(std::begin(defaultSysEx), std::end(defaultSysEx), std::begin(sysExReply));
+          sysExReply[5] = transmitCode;
+          for (int i = dataStart; i < (sysExLength - 2); i++){
+            sysExReply[i] = EEPROM.read(i - dataStart);
+          }
+          byte notChecksm{};
+          for (int i = 1; i < (sysExLength - 2); i++){
+            notChecksm += sysExReply[i];
+          }
+          sysExReply[sysExLength - 2] = (0xff - notChecksm);
+          delay(50);
+          midi.send(sysExReply);
+        }
       }
     }
 } callback = {};
